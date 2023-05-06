@@ -13,6 +13,7 @@ import re
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from tkinter import ttk, filedialog, simpledialog
+import seaborn as sns
 
 nltk.download('punkt')
 nltk.download('stopwords')
@@ -62,11 +63,18 @@ def get_most_relevant_chunks(query, embeddings, k=5):
     return indices
 
 
-def generate_response(prompt, model_name):
+def get_data_info(data):
+    column_names = list(data.columns)
+    column_types = [str(data[col].dtype) for col in column_names]
+    column_summary = [{"name": name, "type": dtype} for name, dtype in zip(column_names, column_types)]
+    return column_summary
+
+def generate_response(prompt, model_name, data_info):
     openai.api_key = openai.api_key
+    data_info_str = "\n".join([f"Column: {info['name']}, Data Type: {info['type']}" for info in data_info])
     messages = [
         {"role": "system", "content": "You are a professional excel file analyzer."},
-        {"role": "user", "content": prompt},
+        {"role": "user", "content": f"{prompt}\n\nData Information:\n{data_info_str}"},
     ]
     response = openai.ChatCompletion.create(
         model=model_name,
@@ -77,6 +85,7 @@ def generate_response(prompt, model_name):
     )
     message = response['choices'][0]['message']['content'].strip()
     return message
+
 
 def generate_questions_suggestions(prompt, model_name):
     openai.api_key = openai.api_key
@@ -169,6 +178,53 @@ def analyze_data(data_chunks, embeddings):
                 plt.title(f"{graph_type} - {x_column} vs {y_column}")
                 plt.show()
 
+def create_visualizations(graph_suggestions, data):
+    for suggestion in graph_suggestions:
+        # Extract the graph type and columns involved
+        graph_type = suggestion["type"]
+        columns = suggestion["columns"]
+
+        if graph_type == "scatter":
+            plt.figure()
+            sns.scatterplot(data=data, x=columns[0], y=columns[1])
+            plt.title(f"{columns[0]} vs {columns[1]}")
+            plt.show()
+
+        # Add other graph types and their plotting code here, e.g. line plot, bar plot, etc.
+
+# Add the parse_graph_suggestions function
+def parse_graph_suggestions(graph_suggestions_text):
+    graph_suggestions_list = []
+    for line in graph_suggestions_text.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            graph_type, columns = line.split(" using ")
+            graph_suggestions_list.append({"type": graph_type.strip().lower(), "columns": columns.strip().split(" and ")})
+        except ValueError:
+            print(f"Warning: Unable to parse graph suggestion line: '{line}'")
+            continue
+    return graph_suggestions_list
+
+def summarize_data(data_chunk):
+    data_info = get_data_info(data_chunk)
+    description = "Data summary:\n"
+    for column in data_info:
+        column_name = column['name']
+        column_type = column['type']
+        description += f"Column: {column_name}, Type: {column_type}\n"
+    return description
+
+def generate_basic_graph_suggestions(data):
+    numeric_columns = [col for col in data.columns if np.issubdtype(data[col].dtype, np.number)]
+
+    graph_suggestions = []
+    for i in range(len(numeric_columns)):
+        for j in range(i + 1, len(numeric_columns)):
+            graph_suggestions.append({"type": "scatter", "columns": [numeric_columns[i], numeric_columns[j]]})
+
+    return graph_suggestions
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -238,7 +294,8 @@ class App(tk.Tk):
 
                 combined_data_text = "\n".join(chunk.to_string() for chunk in relevant_chunks)
                 prompt = f"{query}\n{combined_data_text}"
-                response = generate_response(prompt, self.model_name)
+                data_info = get_data_info(self.data)  # Add this line
+                response = generate_response(prompt, self.model_name, data_info)
 
                 self.show_question_answer_window(query, response)
         else:
@@ -260,9 +317,22 @@ class App(tk.Tk):
 
     def perform_data_analysis(self):
         if self.data_chunks and self.embeddings:
+            # Summarize the entire dataset
+            dataset_summary = summarize_data(self.data)
+
             summaries, graph_suggestions, questions_suggestions = perform_data_analysis_and_generate_questions(
                 self.data_chunks, self.embeddings, self.model_name)
+
+            # Parse the graph suggestions from the AI response
+            graph_suggestions_list = parse_graph_suggestions(graph_suggestions)
+            if not graph_suggestions_list:
+                graph_suggestions_list = generate_basic_graph_suggestions(self.data)
+
+            # Call the create_visualizations function with the parsed suggestions and data
+            create_visualizations(graph_suggestions_list, self.data)
+
             self.output_text.delete(1.0, tk.END)
+            self.output_text.insert(tk.END, dataset_summary)
             self.output_text.insert(tk.END, "Summary from GPT-4:\n")
             self.output_text.insert(tk.END, summaries)
             self.output_text.insert(tk.END, "\n\nGraph Suggestions from GPT-4:\n")
