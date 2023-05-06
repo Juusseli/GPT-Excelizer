@@ -1,5 +1,6 @@
 Title: Excel Data Analyzer with OpenAI Integration
 
+![My Image](GPT-Excelizer.png)
 Description: This project is a Python-based tool that enables users to analyze and summarize data from Excel files using OpenAI's GPT-powered models.
 The tool extracts data from the selected Excel file, generates a summary, suggests potential graphs for visualization, and provides questions that users can ask to gain further insights into the data. 
 
