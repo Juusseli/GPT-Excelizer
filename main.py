@@ -289,11 +289,17 @@ def perform_time_series_analysis(data):
     # Print the resampled data
     print("Monthly data summary:\n", monthly_data)
 
-    # Calculate basic statistics for numeric columns
+    # Check if there are any numeric columns
     numeric_columns = [col for col in data.columns if np.issubdtype(data[col].dtype, np.number)]
+    if not numeric_columns:
+        print("No numeric columns found.")
+        return None
+
+    # Calculate basic statistics for numeric columns
     summary_stats = data[numeric_columns].describe()
 
     return summary_stats
+
 
 def analyze_categorical_data(data):
     # Identify categorical columns
@@ -407,6 +413,9 @@ class App(tk.Tk):
         self.qa_output_text.insert(tk.END, f"Answer from GPT-4:\n{answer}")
 
     def perform_data_analysis(self):
+        if not isinstance(self.data, pd.DataFrame):
+            print("Input data is not a DataFrame")
+            return
         if self.data_chunks and self.embeddings:
             # Summarize the entire dataset
             dataset_summary = summarize_data(self.data)
