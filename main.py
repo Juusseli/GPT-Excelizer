@@ -64,10 +64,28 @@ def get_most_relevant_chunks(query, embeddings, k=5):
 
 
 def get_data_info(data):
-    column_names = list(data.columns)
-    column_types = [str(data[col].dtype) for col in column_names]
-    column_summary = [{"name": name, "type": dtype} for name, dtype in zip(column_names, column_types)]
-    return column_summary
+    data_info = []
+    for column in data.columns:
+        column_info = {"name": column, "type": data[column].dtype}
+
+        # Calculate basic statistics for numeric columns
+        if np.issubdtype(data[column].dtype, np.number):
+            column_info["mean"] = data[column].mean()
+            column_info["std"] = data[column].std()
+            column_info["min"] = data[column].min()
+            column_info["25%"] = data[column].quantile(0.25)
+            column_info["50%"] = data[column].quantile(0.50)
+            column_info["75%"] = data[column].quantile(0.75)
+            column_info["max"] = data[column].max()
+
+        # Calculate frequency for categorical columns
+        else:
+            column_info["value_counts"] = data[column].value_counts().to_dict()
+
+        data_info.append(column_info)
+
+    return data_info
+
 
 def generate_response(prompt, model_name, data_info):
     openai.api_key = openai.api_key
@@ -178,7 +196,8 @@ def analyze_data(data_chunks, embeddings):
                 plt.title(f"{graph_type} - {x_column} vs {y_column}")
                 plt.show()
 
-def create_visualizations(graph_suggestions, data):
+def create_visualizations(graph_suggestions, data, limit=3):
+    counter = 0
     for suggestion in graph_suggestions:
         # Extract the graph type and columns involved
         graph_type = suggestion["type"]
@@ -189,8 +208,13 @@ def create_visualizations(graph_suggestions, data):
             sns.scatterplot(data=data, x=columns[0], y=columns[1])
             plt.title(f"{columns[0]} vs {columns[1]}")
             plt.show()
+            counter += 1
 
         # Add other graph types and their plotting code here, e.g. line plot, bar plot, etc.
+
+        if limit is not None and counter >= limit:
+            break
+
 
 # Add the parse_graph_suggestions function
 def parse_graph_suggestions(graph_suggestions_text):
@@ -206,6 +230,7 @@ def parse_graph_suggestions(graph_suggestions_text):
             continue
     return graph_suggestions_list
 
+
 def summarize_data(data_chunk):
     data_info = get_data_info(data_chunk)
     description = "Data summary:\n"
@@ -213,17 +238,75 @@ def summarize_data(data_chunk):
         column_name = column['name']
         column_type = column['type']
         description += f"Column: {column_name}, Type: {column_type}\n"
+
+        # Add basic statistics for numeric columns
+        if np.issubdtype(column['type'], np.number):
+            description += f"Mean: {column['mean']:.2f}, Std: {column['std']:.2f}, Min: {column['min']}, 25%: {column['25%']}, 50%: {column['50%']}, 75%: {column['75%']}, Max: {column['max']}\n"
+
+        # Add frequency for categorical columns
+        else:
+            value_counts = ", ".join(f"{key}: {value}" for key, value in column['value_counts'].items())
+            description += f"Value counts: {value_counts}\n"
+
+        description += "\n"
+
     return description
 
-def generate_basic_graph_suggestions(data):
+
+def generate_basic_graph_suggestions(data, max_graphs=3):
     numeric_columns = [col for col in data.columns if np.issubdtype(data[col].dtype, np.number)]
 
     graph_suggestions = []
     for i in range(len(numeric_columns)):
         for j in range(i + 1, len(numeric_columns)):
             graph_suggestions.append({"type": "scatter", "columns": [numeric_columns[i], numeric_columns[j]]})
+            if len(graph_suggestions) >= max_graphs:
+                break
+        if len(graph_suggestions) >= max_graphs:
+            break
 
     return graph_suggestions
+
+
+def perform_time_series_analysis(data):
+    # Identify the date column
+    date_column = None
+    for column in data.columns:
+        if np.issubdtype(data[column].dtype, np.datetime64):
+            date_column = column
+            break
+
+    if not date_column:
+        print("No date column found.")
+        return None
+
+    # Set the date column as the index and sort by date
+    data = data.set_index(date_column).sort_index()
+
+    # Resample the data by calculating the mean for each month
+    monthly_data = data.resample('M').mean()
+
+    # Print the resampled data
+    print("Monthly data summary:\n", monthly_data)
+
+    # Calculate basic statistics for numeric columns
+    numeric_columns = [col for col in data.columns if np.issubdtype(data[col].dtype, np.number)]
+    summary_stats = data[numeric_columns].describe()
+
+    return summary_stats
+
+def analyze_categorical_data(data):
+    # Identify categorical columns
+    categorical_columns = [col for col in data.columns if data[col].dtype == 'object']
+
+    # Calculate the frequency distribution for each categorical column
+    categorical_data_summary = {}
+    for column in categorical_columns:
+        categorical_data_summary[column] = data[column].value_counts().to_dict()
+
+    return categorical_data_summary
+
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -242,7 +325,6 @@ class App(tk.Tk):
 
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(padx=5, pady=5, expand=True, fill=tk.BOTH)
-
         ttk.Button(button_frame, text="Set API Key", command=self.set_api_key).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Set Model", command=self.set_model).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Open File", command=open_file).pack(side=tk.LEFT, padx=5)
@@ -293,9 +375,18 @@ class App(tk.Tk):
                 relevant_chunks = [self.data_chunks[i] for i in relevant_chunk_indices]
 
                 combined_data_text = "\n".join(chunk.to_string() for chunk in relevant_chunks)
-                prompt = f"{query}\n{combined_data_text}"
-                data_info = get_data_info(self.data)  # Add this line
-                response = generate_response(prompt, self.model_name, data_info)
+
+                # Split the query into smaller chunks based on sentences using NLTK
+                chunk_prompts = nltk.sent_tokenize(query)
+                data_info = get_data_info(self.data)
+
+                responses = []
+                for chunk_prompt in chunk_prompts:
+                    # Generate response for each chunk prompt
+                    chunk_response = generate_response(chunk_prompt, self.model_name, data_info)
+                    responses.append(chunk_response)
+
+                response = " ".join(responses)
 
                 self.show_question_answer_window(query, response)
         else:
@@ -326,11 +417,22 @@ class App(tk.Tk):
             # Parse the graph suggestions from the AI response
             graph_suggestions_list = parse_graph_suggestions(graph_suggestions)
             if not graph_suggestions_list:
-                graph_suggestions_list = generate_basic_graph_suggestions(self.data)
+                graph_suggestions_list = generate_basic_graph_suggestions(self.data, max_graphs=3)
 
             # Call the create_visualizations function with the parsed suggestions and data
             create_visualizations(graph_suggestions_list, self.data)
+            # Call the perform_time_series_analysis function
+            time_series_summary = perform_time_series_analysis(self.data)
+            if time_series_summary is not None:
+                self.output_text.insert(tk.END, "\nTime Series Summary:\n")
+                self.output_text.insert(tk.END, time_series_summary.to_string())
 
+            # Call the analyze_categorical_data function
+            categorical_data_summary = analyze_categorical_data(self.data)
+            self.output_text.insert(tk.END, "\nCategorical Data Summary:\n")
+            for column, value_counts in categorical_data_summary.items():
+                value_counts_str = ", ".join(f"{key}: {value}" for key, value in value_counts.items())
+                self.output_text.insert(tk.END, f"{column}: {value_counts_str}\n")
             self.output_text.delete(1.0, tk.END)
             self.output_text.insert(tk.END, dataset_summary)
             self.output_text.insert(tk.END, "Summary from GPT-4:\n")
