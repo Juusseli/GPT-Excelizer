@@ -87,44 +87,48 @@ def get_data_info(data):
     return data_info
 
 
-def generate_response(prompt, model_name, data_info):
+def generate_response(prompt, model_name, data_info, data, prev_question=None, prev_answer=None):
     openai.api_key = openai.api_key
     data_info_str = "\n".join([f"Column: {info['name']}, Data Type: {info['type']}" for info in data_info])
     messages = [
-        {"role": "system", "content": "You are a professional excel file analyzer."},
+        {"role": "system", "content": "You are a professional excel file analyzer and become master of the subject of the context of the data."},
         {"role": "user", "content": f"{prompt}\n\nData Information:\n{data_info_str}"},
+    ]
+    # Include the previous question and answer as part of the messages list if they exist
+    if prev_question and prev_answer:
+        messages.append({"role": "user", "content": f"Previous Question: {prev_question}"})
+        messages.append({"role": "system", "content": f"Previous Answer: {prev_answer}"})
+    response = openai.ChatCompletion.create(
+        model=model_name,
+        messages=messages,
+        max_tokens=512,
+        n=1,
+        temperature=0.88,
+    )
+    message = response['choices'][0]['message']['content'].strip()
+    return message
+
+
+def generate_questions_suggestions(prompt, data_summary, graph_suggestions, model_name):
+    openai.api_key = openai.api_key
+    messages = [
+        {"role": "system", "content": "You are an AI assistant that suggests questions to ask about a dataset based on the context ."},
+        {"role": "user", "content": f"{prompt}\n\nData Summary:\n{data_summary}\n\nGraph Suggestions:\n{graph_suggestions}"},
     ]
     response = openai.ChatCompletion.create(
         model=model_name,
         messages=messages,
         max_tokens=512,
         n=1,
-        temperature=0.8,
-    )
-    message = response['choices'][0]['message']['content'].strip()
-    return message
-
-
-def generate_questions_suggestions(prompt, model_name):
-    openai.api_key = openai.api_key
-    messages = [
-        {"role": "system", "content": "You are an AI assistant that suggests questions to ask about a dataset."},
-        {"role": "user", "content": prompt},
-    ]
-    response = openai.ChatCompletion.create(
-        model=model_name,
-        messages=messages,
-        max_tokens=100,
-        n=1,
-        temperature=0.8,
+        temperature=0.88,
     )
     message = response['choices'][0]['message']['content'].strip()
     return message
 
 def perform_data_analysis_and_generate_questions(data_chunks, embeddings, model_name):
     summaries, graph_suggestions = analyze_data(data_chunks, embeddings)
-    prompt = "Based on the data summary, suggest some questions to ask:"
-    questions_suggestions = generate_questions_suggestions(prompt, model_name)
+    prompt = "Based on the data summary and the graph suggestions, suggest some questions to ask:"
+    questions_suggestions = generate_questions_suggestions(prompt, summaries, graph_suggestions, model_name)
     return summaries, graph_suggestions, questions_suggestions
 
 def analyze_data(data_chunks, embeddings):
@@ -151,9 +155,9 @@ def analyze_data(data_chunks, embeddings):
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=messages,
-            max_tokens=250,
+            max_tokens=512,
             n=1,
-            temperature=0.8,
+            temperature=0.7,
         )
         response_content = response['choices'][0]['message']['content'].strip()
         return response_content
@@ -332,7 +336,7 @@ class App(tk.Tk):
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(padx=5, pady=5, expand=True, fill=tk.BOTH)
         ttk.Button(button_frame, text="Set API Key", command=self.set_api_key).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Set Model", command=self.set_model).pack(side=tk.LEFT, padx=5)
+        #ttk.Button(button_frame, text="Set Model", command=self.set_model).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Open File", command=open_file).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Data Analysis", command=self.perform_data_analysis).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Ask Question", command=self.ask_question).pack(side=tk.LEFT, padx=5)
@@ -350,6 +354,34 @@ class App(tk.Tk):
         self.output_text = tk.Text(main_frame, wrap=tk.WORD)
         self.output_text.pack(padx=5, pady=5, expand=True, fill=tk.BOTH)
 
+        # Add these two lines to initialize prev_question and prev_answer as empty strings
+        self.prev_question = ""
+        self.prev_answer = ""
+
+        # Create a new Toplevel window and its widgets in the __init__ method
+        self.qa_window = tk.Toplevel(self)
+        self.qa_window.title("Question and Answer")
+        self.qa_window.geometry("600x400")
+        # Add a scrollbar to the text widget and configure it
+        self.qa_scrollbar = tk.Scrollbar(self.qa_window)  # Store the scrollbar as an instance variable
+        self.qa_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Create the qa_output_text after the qa_scrollbar
+        self.qa_output_text = tk.Text(self.qa_window, wrap=tk.WORD,
+                                      yscrollcommand=self.qa_scrollbar.set)  # Link the text widget to the scrollbar
+        self.qa_output_text.pack(padx=5, pady=5, expand=True, fill=tk.BOTH)
+
+
+
+        # Add an entry widget and a send button at the bottom of the window and pass the parent argument
+        self.qa_entry_frame = tk.Frame(self.qa_window)
+        self.qa_entry_frame.pack(padx=5, pady=5)
+
+        self.qa_entry = tk.Entry(self.qa_entry_frame)  # Store the entry widget as an instance variable
+        self.qa_entry.pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        self.send_button = tk.Button(self.qa_entry_frame, text="Send", command=self.ask_question)
+        self.send_button.pack(side=tk.RIGHT)
     def model_selection(self, event=None):
         self.model_name = self.model_combobox.get()
 
@@ -375,7 +407,7 @@ class App(tk.Tk):
 
     def ask_question(self):
         if self.embeddings and hasattr(self, 'model_name'):
-            query = simpledialog.askstring("Question", "Please enter your question:")
+            query = self.qa_entry.get()  # Get the question from the entry widget
             if query:
                 relevant_chunk_indices = get_most_relevant_chunks(query, self.embeddings)
                 relevant_chunks = [self.data_chunks[i] for i in relevant_chunk_indices]
@@ -389,28 +421,54 @@ class App(tk.Tk):
                 responses = []
                 for chunk_prompt in chunk_prompts:
                     # Generate response for each chunk prompt
-                    chunk_response = generate_response(chunk_prompt, self.model_name, data_info)
+                    # Pass the previous question and answer as additional inputs
+                    # Pass self.data as an additional argument to the generate_response function
+                    chunk_response = generate_response(chunk_prompt, self.model_name, data_info, self.data,
+                                                       self.prev_question,
+                                                       self.prev_answer)
                     responses.append(chunk_response)
 
                 response = " ".join(responses)
 
+                # Store the current question and answer as instance variables
+                self.prev_question = query
+                self.prev_answer = response
+
                 self.show_question_answer_window(query, response)
-        else:
-            self.output_text.delete(1.0, tk.END)
-            self.output_text.insert(tk.END, "Please set API key, model, and load an Excel file.")
+            else:
+                self.output_text.delete(1.0, tk.END)
+                self.output_text.insert(tk.END, "Please set API key, model, and load an Excel file.")
 
     def show_question_answer_window(self, question, answer):
-        if self.qa_window is None:  # Create a new Toplevel window if it doesn't exist
+        if self.qa_window is None:  # Create a new Toplevel window and its widgets if they don't exist
             self.qa_window = tk.Toplevel(self)
             self.qa_window.title("Question and Answer")
             self.qa_window.geometry("600x400")
 
-            self.qa_output_text = tk.Text(self.qa_window, wrap=tk.WORD)  # Store the Text widget as an instance variable
+            # Add a scrollbar to the text widget and configure it
+            self.qa_scrollbar = tk.Scrollbar(self.qa_window)  # Store the scrollbar as an instance variable
+            self.qa_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+            # Create the qa_output_text after the qa_scrollbar
+            self.qa_output_text = tk.Text(self.qa_window, wrap=tk.WORD,
+                                          yscrollcommand=self.qa_scrollbar.set)  # Link the text widget to the scrollbar
             self.qa_output_text.pack(padx=5, pady=5, expand=True, fill=tk.BOTH)
 
-        #self.qa_output_text.delete(1.0, tk.END)  # Clear the existing content
+            # Add an entry widget and a send button at the bottom of the window and pass the parent argument
+            self.qa_entry_frame = tk.Frame(self.qa_window)
+            self.qa_entry_frame.pack(padx=5, pady=5)
+
+            self.qa_entry = tk.Entry(self.qa_entry_frame)  # Store the entry widget as an instance variable
+            self.qa_entry.pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+            self.send_button = tk.Button(self.qa_entry_frame, text="Send", command=self.ask_question)
+            self.send_button.pack(side=tk.RIGHT)
+
+        # Append the question and answer to the text widget instead of clearing it
         self.qa_output_text.insert(tk.END, f"Question: {question}\n")
-        self.qa_output_text.insert(tk.END, f"Answer from GPT-4:\n{answer}")
+        self.qa_output_text.insert(tk.END, f"Answer from GPT-4:\n{answer}\n\n")
+        # Scroll to the end of the text widget
+        self.qa_output_text.see(tk.END)
 
     def perform_data_analysis(self):
         if not isinstance(self.data, pd.DataFrame):
