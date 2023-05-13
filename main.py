@@ -153,7 +153,7 @@ def analyze_data(data_chunks, embeddings):
         ]
 
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4",
             messages=messages,
             max_tokens=512,
             n=1,
